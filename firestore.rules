@@ -1,0 +1,80 @@
+// firestore.rules
+// Deploy dengan: firebase deploy --only firestore:rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ──────────────────────────────────────────────────────
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isValidCode() {
+      return request.resource.data.keys().hasAll(['title', 'code', 'language', 'authorId', 'isPublic'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.code is string
+        && request.resource.data.code.size() <= 100000;
+    }
+
+    // ── Users ─────────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      // Read own profile or admin reads any
+      allow read: if isOwner(userId) || isAdmin();
+      // Create own profile on signup
+      allow create: if isOwner(userId) && request.resource.data.role == 'user';
+      // Update own profile (can't change role or uid)
+      allow update: if isOwner(userId)
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.uid == resource.data.uid;
+      // Admin can update
+      allow update: if isAdmin();
+      // Only admin can delete
+      allow delete: if isAdmin() || isOwner(userId);
+    }
+
+    // ── Codes ─────────────────────────────────────────────────────────────────
+    match /codes/{codeId} {
+      // Anyone can read public codes; owner or admin reads private
+      allow read: if resource.data.isPublic == true
+        || (isAuthenticated() && isOwner(resource.data.authorId))
+        || isAdmin();
+
+      // Authenticated users can create their own codes
+      allow create: if isAuthenticated()
+        && isOwner(request.resource.data.authorId)
+        && isValidCode();
+
+      // Owner can update own code
+      allow update: if isAuthenticated()
+        && isOwner(resource.data.authorId)
+        && isOwner(request.resource.data.authorId);
+
+      // Allow like/unlike (any authenticated user can update likes field)
+      allow update: if isAuthenticated()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'views']);
+
+      // Owner or admin can delete
+      allow delete: if isAuthenticated()
+        && (isOwner(resource.data.authorId) || isAdmin());
+    }
+
+    // ── Feedback ──────────────────────────────────────────────────────────────
+    match /feedback/{feedbackId} {
+      allow create: if isAuthenticated();
+      allow read: if isAdmin();
+      allow update, delete: if isAdmin();
+    }
+  }
+}
